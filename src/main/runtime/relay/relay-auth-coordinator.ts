@@ -5,37 +5,19 @@ import {
 import { relayStatusCellUrl } from '../../../shared/mobile-relay-status'
 import type { RelayBrokerStatus } from './relay-session-broker'
 import { RelayHttpError, shouldRetryRelayConnectionError } from './relay-http-client'
+import type {
+  CoordinatedRelayBroker,
+  RelayAuthContext,
+  RelayAuthCoordinatorOptions,
+  RelayAuthIdentity,
+  RelayReconcileOptions as ReconcileOptions
+} from './relay-auth-coordinator-contract'
 
-export type RelayAuthIdentity = {
-  userId: string
-  profileId: string
-  organizationId: string
-}
-
-export type RelayAuthContext = {
-  identity: RelayAuthIdentity
-  accessToken: string
-  relayEntitled: boolean
-}
-
-export type CoordinatedRelayBroker = {
-  closeNow(hostCloseReason?: RelayHostCloseReason): void
-  isLive?(): boolean
-  readonly endpoint?: { cellUrl: string } | null
-}
-
-type RelayAuthCoordinatorOptions = {
-  readContext: () => Promise<RelayAuthContext | null>
-  hasDemand?: (context: RelayAuthContext) => boolean
-  openBroker: (input: {
-    context: RelayAuthContext
-    isCurrent: () => boolean
-    refreshAccessToken: () => Promise<string | null>
-  }) => Promise<CoordinatedRelayBroker>
-  onStatus: (status: RelayBrokerStatus, cellUrl?: string) => void
-  lingerMs?: number
-  random?: () => number
-}
+export type {
+  CoordinatedRelayBroker,
+  RelayAuthContext,
+  RelayAuthIdentity
+} from './relay-auth-coordinator-contract'
 
 type BrokerOwnership = {
   identityKey: string
@@ -65,11 +47,15 @@ export class RelayAuthCoordinator {
     this.options = options
   }
 
-  reconcile(): void {
-    this.beginReconcile(true)
+  reconcile(options?: ReconcileOptions): void {
+    this.beginReconcile(true, undefined, options)
   }
 
-  private beginReconcile(resetRetry: boolean, expectedIdentityKey?: string): void {
+  private beginReconcile(
+    resetRetry: boolean,
+    expectedIdentityKey?: string,
+    options?: ReconcileOptions
+  ): void {
     if (this.stopped) {
       return
     }
@@ -79,7 +65,7 @@ export class RelayAuthCoordinator {
     }
     const epoch = ++this.authEpoch
     this.invalidatePendingOwnerships()
-    const reconcile = this.reconcileEpoch(epoch, expectedIdentityKey)
+    const reconcile = this.reconcileEpoch(epoch, expectedIdentityKey, options)
     this.latestReconcile = reconcile
     void reconcile
   }
@@ -155,7 +141,11 @@ export class RelayAuthCoordinator {
     this.fenceAndCloseNow()
   }
 
-  private async reconcileEpoch(epoch: number, expectedIdentityKey?: string): Promise<void> {
+  private async reconcileEpoch(
+    epoch: number,
+    expectedIdentityKey?: string,
+    options?: ReconcileOptions
+  ): Promise<void> {
     let retryIdentityKey: string | undefined
     try {
       const context = await this.options.readContext()
@@ -181,7 +171,10 @@ export class RelayAuthCoordinator {
       }
       if (!(this.options.hasDemand?.(context) ?? true)) {
         this.retryAttempt = 0
-        if (this.ownership?.valid && this.ownership.identityKey !== nextIdentityKey) {
+        if (
+          this.ownership?.valid &&
+          (options?.skipLinger || this.ownership.identityKey !== nextIdentityKey)
+        ) {
           this.cancelLinger()
           this.invalidateOwnership()
         } else if (this.ownership?.valid) {
