@@ -1,5 +1,5 @@
 import { createElement } from 'react'
-import { act, create } from 'react-test-renderer'
+import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { describe, expect, it, vi } from 'vitest'
 import type { RpcClient } from '../transport/rpc-client'
 import { useNewWorkspaceExecutionTarget } from './use-new-workspace-execution-target'
@@ -63,6 +63,52 @@ describe('useNewWorkspaceExecutionTarget agent detection', () => {
       repoPath: '\\\\wsl.localhost\\Ubuntu-24.04\\home\\dev\\project'
     })
 
-    expect(client.sendRequest).not.toHaveBeenCalledWith('preflight.detectAgents', expect.anything())
+    // Exact call list: `not.toHaveBeenCalledWith(..., expect.anything())` misses a 1-arg or undefined call.
+    const detectionCalls = client.sendRequest.mock.calls.filter(([method]) =>
+      String(method).startsWith('preflight.')
+    )
+    expect(detectionCalls).toEqual([['preflight.detectRemoteAgents', { connectionId: 'ssh-1' }]])
+  })
+
+  it('hides the previous repo agents until the new distro answers', async () => {
+    let answerWsl: (reply: unknown) => void = () => {}
+    const client = createClient((_method, params) =>
+      params && typeof params === 'object' && 'wslDistro' in params
+        ? new Promise((resolve) => {
+            answerWsl = resolve
+          })
+        : Promise.resolve({ ok: true, result: ['codex'] })
+    )
+    const rendered: ReturnType<typeof useNewWorkspaceExecutionTarget>[] = []
+    const latestIds = () => rendered[rendered.length - 1]?.detectedAgentIds
+    function Probe(props: { repoPath: string }): null {
+      rendered.push(
+        useNewWorkspaceExecutionTarget({
+          client,
+          connectionId: null,
+          repoPath: props.repoPath,
+          visible: true
+        })
+      )
+      return null
+    }
+    let renderer!: ReactTestRenderer
+    await act(async () => {
+      renderer = create(createElement(Probe, { repoPath: 'C:\\dev\\project' }))
+    })
+    expect(latestIds()).toEqual(new Set(['codex']))
+
+    await act(async () => {
+      renderer.update(
+        createElement(Probe, { repoPath: '\\\\wsl.localhost\\Ubuntu-24.04\\home\\dev\\project' })
+      )
+    })
+    expect(latestIds()).toBeNull()
+
+    await act(async () => {
+      answerWsl({ ok: true, result: ['claude'] })
+    })
+    expect(latestIds()).toEqual(new Set(['claude']))
+    renderer.unmount()
   })
 })

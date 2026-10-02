@@ -15,6 +15,7 @@ import { getWorkspaceDetectAgentsParams } from '../worktree/workspace-agent-dete
 
 type DetectedAgentIdsState = {
   connectionId: string | null
+  wslDistro: string | null
   ids: Set<string>
 }
 
@@ -47,8 +48,13 @@ export function useNewWorkspaceExecutionTarget(args: {
     state: sshState,
     connecting: connectingTargetId === connectionId
   })
+  // Why: keyed by the detection target so a repo switch never shows the previous machine's agents.
+  const wslDistro = connectionId
+    ? null
+    : (getWorkspaceDetectAgentsParams(repoPath)?.wslDistro ?? null)
   const detectedAgentIds =
     detectedAgentIdsState?.connectionId === connectionId &&
+    detectedAgentIdsState.wslDistro === wslDistro &&
     (connectionId === null || sshGate.status === 'connected')
       ? detectedAgentIdsState.ids
       : null
@@ -95,27 +101,25 @@ export function useNewWorkspaceExecutionTarget(args: {
               await remoteAgentDetectionRead.request(client, { connectionId })
             )
           : localAgentDetectionRead.interpret(
-              await localAgentDetectionRead.request(
-                client,
-                getWorkspaceDetectAgentsParams(repoPath)
-              )
+              await localAgentDetectionRead.request(client, wslDistro ? { wslDistro } : undefined)
             )
         if (!stale) {
           setDetectedAgentIdsState({
             connectionId,
+            wslDistro,
             ids: detected.accepted ? new Set(detected.value) : new Set()
           })
         }
       } catch {
         if (!stale) {
-          setDetectedAgentIdsState({ connectionId, ids: new Set() })
+          setDetectedAgentIdsState({ connectionId, wslDistro, ids: new Set() })
         }
       }
     })()
     return () => {
       stale = true
     }
-  }, [client, connectionId, repoPath, sshGate.status, visible])
+  }, [client, connectionId, wslDistro, sshGate.status, visible])
 
   async function connect(): Promise<void> {
     if (!client || !connectionId) {
