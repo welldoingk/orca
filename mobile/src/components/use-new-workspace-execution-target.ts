@@ -11,9 +11,11 @@ import {
   type WorkspaceSshGate,
   type WorkspaceSshRecord
 } from '../tasks/workspace-ssh-gate'
+import { getWorkspaceDetectAgentsParams } from '../worktree/workspace-agent-detection-target'
 
 type DetectedAgentIdsState = {
   connectionId: string | null
+  wslDistro: string | null
   ids: Set<string>
 }
 
@@ -28,13 +30,14 @@ function fallbackSshState(
 export function useNewWorkspaceExecutionTarget(args: {
   client: RpcClient | null
   connectionId: string | null
+  repoPath?: string | null
   visible: boolean
 }): {
   sshGate: WorkspaceSshGate
   detectedAgentIds: Set<string> | null
   connect: () => Promise<void>
 } {
-  const { client, connectionId, visible } = args
+  const { client, connectionId, repoPath = null, visible } = args
   const [sshState, setSshState] = useState<WorkspaceSshRecord | null>(null)
   const [connectingTargetId, setConnectingTargetId] = useState<string | null>(null)
   const [detectedAgentIdsState, setDetectedAgentIdsState] = useState<DetectedAgentIdsState | null>(
@@ -45,8 +48,13 @@ export function useNewWorkspaceExecutionTarget(args: {
     state: sshState,
     connecting: connectingTargetId === connectionId
   })
+  // Why: keyed by the detection target so a repo switch never shows the previous machine's agents.
+  const wslDistro = connectionId
+    ? null
+    : (getWorkspaceDetectAgentsParams(repoPath)?.wslDistro ?? null)
   const detectedAgentIds =
     detectedAgentIdsState?.connectionId === connectionId &&
+    detectedAgentIdsState.wslDistro === wslDistro &&
     (connectionId === null || sshGate.status === 'connected')
       ? detectedAgentIdsState.ids
       : null
@@ -92,23 +100,26 @@ export function useNewWorkspaceExecutionTarget(args: {
           ? remoteAgentDetectionRead.interpret(
               await remoteAgentDetectionRead.request(client, { connectionId })
             )
-          : localAgentDetectionRead.interpret(await localAgentDetectionRead.request(client))
+          : localAgentDetectionRead.interpret(
+              await localAgentDetectionRead.request(client, wslDistro ? { wslDistro } : undefined)
+            )
         if (!stale) {
           setDetectedAgentIdsState({
             connectionId,
+            wslDistro,
             ids: detected.accepted ? new Set(detected.value) : new Set()
           })
         }
       } catch {
         if (!stale) {
-          setDetectedAgentIdsState({ connectionId, ids: new Set() })
+          setDetectedAgentIdsState({ connectionId, wslDistro, ids: new Set() })
         }
       }
     })()
     return () => {
       stale = true
     }
-  }, [client, connectionId, sshGate.status, visible])
+  }, [client, connectionId, wslDistro, sshGate.status, visible])
 
   async function connect(): Promise<void> {
     if (!client || !connectionId) {
